@@ -1,53 +1,94 @@
 #!/bin/bash
 
+set -e  # 遇到錯誤立即停止
+set -x  # 顯示執行過程
+
+# =============================
 # 清理舊文件
-echo "Cleaning up old files..."
-rm -f sinegen cascade spectrogram scp.txt s-16k.wav s-8k.wav *.wav *.txt *.pdf
+# =============================
+echo "清理舊文件..."
+rm -rf scp scp_8k                     # 刪除舊的 scp 和 scp_8k 目錄
+rm -f sinegen cascade spectrogram     # 刪除舊的執行檔
+rm -f scp_16k.txt scp_8k.txt          # 刪除舊的 SCP 文件
+rm -f s-16k.wav s-8k.wav              # 刪除舊的 WAV 文件
+rm -f *.txt *.pdf                     # 刪除舊的 TXT 和 PDF 文件
+mkdir -p scp scp_8k                   # 創建新的目錄
 
+# =============================
 # 編譯 C 程式
-echo "Compiling C programs..."
-gcc -o sinegen sinegen.c -lm || { echo "Error: Failed to compile sinegen"; exit 1; }
-gcc -o cascade cascade.c -lm || { echo "Error: Failed to compile cascade"; exit 1; }
-gcc -o spectrogram spectrogram.c -lm || { echo "Error: Failed to compile spectrogram"; exit 1; }
+# =============================
+echo "編譯 C 程式..."
+gcc -o sinegen sinegen.c -lm || { echo "錯誤：編譯 sinegen 失敗"; exit 1; }
+gcc -o cascade cascade.c -lm || { echo "錯誤：編譯 cascade 失敗"; exit 1; }
+gcc -o spectrogram spectrogram.c -lm || { echo "錯誤：編譯 spectrogram 失敗"; exit 1; }
 
-# 生成 40 個 WAV 文件
-echo "Generating 40 WAV files..."
-types=(sine sawtooth square triangle)
-frequencies=("0 100" "31.25 2000" "500 1000" "2000 500" "4000 250" "44 100" "220 2000" "440 1000" "1760 500" "3960 250")
+# =============================
+# 生成 16kHz 和 8kHz WAV 文件
+# =============================
+types=(sine sawtooth square triangle) # 波形類型
+frequencies=(0 31.25 500 2000 4000 44 220 440 1760 3960) # 頻率設置
+amplitudes=(100 2000 1000 500 250 100 2000 1000 500 250) # 振幅設置
+
+# 生成 16kHz WAV 文件
+echo "生成 16kHz WAV 文件..."
+> scp_16k.txt                         # 清空或創建 SCP 文件
 index=1
-> scp.txt
-
 for type in "${types[@]}"; do
-    for freq in "${frequencies[@]}"; do
-        output="s${index}.wav"
-        ./sinegen 16000 16 $type $freq 0.1 "$output" || { echo "Error: Failed to generate $output"; exit 1; }
-        mv "$output" scp
-        echo "scp/$output" >> scp.txt
-        index=$((index + 1))
+    for i in "${!frequencies[@]}"; do
+        freq="${frequencies[i]}"
+        amp="${amplitudes[i]}"
+        output="s16k_${index}.wav"    # 輸出文件名
+        ./sinegen 16000 16 $type $freq $amp 0.1 "$output" # 使用 sinegen 生成波形
+        mv "$output" scp/            # 移動文件到 SCP 目錄
+        echo "scp/$output" >> scp_16k.txt # 添加到 SCP 列表
+        index=$((index + 1))         # 更新索引
+    done
+done
+./cascade scp_16k.txt s-16k.wav || { echo "錯誤：生成 s-16k.wav 失敗"; exit 1; }
+
+# 生成 8kHz WAV 文件
+echo "生成 8kHz WAV 文件..."
+> scp_8k.txt                         # 清空或創建 SCP 文件
+index=1
+for type in "${types[@]}"; do
+    for i in "${!frequencies[@]}"; do
+        freq="${frequencies[i]}"
+        amp="${amplitudes[i]}"
+        output="s8k_${index}.wav"    # 輸出文件名
+        ./sinegen 8000 16 $type $freq $amp 0.1 "$output" # 使用 sinegen 生成波形
+        mv "$output" scp_8k/         # 移動文件到 SCP_8k 目錄
+        echo "scp_8k/$output" >> scp_8k.txt # 添加到 SCP 列表
+        index=$((index + 1))         # 更新索引
+    done
+done
+./cascade scp_8k.txt s-8k.wav || { echo "錯誤：生成 s-8k.wav 失敗"; exit 1; }
+
+# =============================
+# 設置頻譜參數並生成 TXT 文件
+# =============================
+echo "生成頻譜 TXT 文件..."
+settings=(                              # 頻譜設置參數
+  "32ms rectangular 32ms 10ms"
+  "32ms hamming 32ms 10ms"
+  "30ms rectangular 32ms 10ms"
+  "30ms hamming 32ms 10ms"
+)
+wav_files=("s-16k.wav" "s-8k.wav" "aeueo-16kHz.wav" "aeueo-8kHz.wav") # 處理的 WAV 文件
+for wav_file in "${wav_files[@]}"; do
+    for i in {0..3}; do
+        IFS=' ' read -r w_size w_type dft_size f_itv <<< "${settings[$i]}"
+        output_txt="${wav_file%.wav}.Set$((i+1)).txt" # 設定輸出文件名
+        echo "處理 $wav_file 使用 $w_size, $w_type, $dft_size, $f_itv -> $output_txt"
+        ./spectrogram "$w_size" "$w_type" "$dft_size" "$f_itv" "$wav_file" "$output_txt" || {
+            echo "錯誤：處理 $wav_file 使用 $w_size, $w_type 失敗"
+            exit 1
+        }
     done
 done
 
-# 串接 WAV 文件為 s-16k.wav 和 s-8k.wav
-./cascade scp.txt s-16k.wav || { echo "Error: Failed to generate s-16k.wav"; exit 1; }
-
-# 更新採樣率為 8k 的檔案
-echo "Resampling to 8kHz..."
-index=1
-> scp_8k.txt
-for file in scp/s*.wav; do
-    output="s8k_${index}.wav"
-    sox "$file" -r 8000 "$output" || { echo "Error: Failed to resample $file to $output"; exit 1; }
-    mv "$output" scp
-    echo "scp/$output" >> scp_8k.txt
-    index=$((index + 1))
-done
-
-./cascade scp_8k.txt s-8k.wav || { echo "Error: Failed to generate s-8k.wav"; exit 1; }
-
-# 確保所有 WAV 文件生成成功
-if [ ! -f "s-16k.wav" ] || [ ! -f "s-8k.wav" ]; then
-    echo "Error: Output WAV files not found"
-    exit 1
-fi
-
-echo "WAV files successfully generated and merged!"
+# =============================
+# 結果輸出
+# =============================
+echo "生成的 TXT 文件列表:"
+ls -l *.txt                             # 列出所有 TXT 文件
+echo "所有任務成功完成！"
